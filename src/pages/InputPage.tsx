@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useState, useTransition } from "react";
 import Card from "../shared/ui/Card";
 import { fetchItems, type Item } from "../shared/api/mockApi";
 
@@ -38,13 +38,22 @@ export default function InputPage() {
 
     // Input B: без дебаунса фильтрует уже полученный массив (клиентская нагрузка)
     const [clientFilter, setClientFilter] = useState("");
+    const [filterForList, setFilterForList] = useState("");
+
+    const deferredClientFilter = useDeferredValue(clientFilter);
+    const deferredServerQuery = useDeferredValue(serverQuery);
+
+
+    const [isPending, startTransition] = useTransition();
+
+    const isStale = deferredClientFilter !== clientFilter;
 
     const [items, setItems] = useState<Item[]>([]);
     const [loading, setLoading] = useState(false);
 
     // Параметры нагрузки
-    const count = 5000;     // стартуй с 5k; если надо — 15k+
-    const limit = 600;      // ограничим DOM, иначе упремся в layout/paint, а не в вычисления
+    const count = 15000;     // стартуй с 5k; если надо — 15k+
+    const limit = 500;      // ограничим DOM, иначе упремся в layout/paint, а не в вычисления
 
     useEffect(() => {
         const ac = new AbortController();
@@ -53,7 +62,7 @@ export default function InputPage() {
 
         fetchItems({
             count,
-            query: serverQuery,
+            query: deferredServerQuery,
             signal: ac.signal,
             minDelayMs: 200,
             maxDelayMs: 600,
@@ -66,16 +75,11 @@ export default function InputPage() {
             .finally(() => setLoading(false));
 
         return () => ac.abort();
-    }, [serverQuery]);
+    }, [deferredServerQuery]);
 
     const derived = useMemo(() => {
-        const q = normalize(clientFilter);
+        const q = normalize(filterForList);
 
-        // Тяжелый пайплайн:
-        // 1) map -> scoring
-        // 2) filter
-        // 3) sort by match score + base score
-        // 4) slice (чтобы DOM был ограничен)
         const scored = items.map((it) => ({
             it,
             m: scoreMatch(it, q),
@@ -84,7 +88,6 @@ export default function InputPage() {
         const filtered = q ? scored.filter((x) => x.m > 0) : scored;
 
         filtered.sort((a, b) => {
-            // сначала match score, потом base score
             if (b.m !== a.m) return b.m - a.m;
             return b.it.score - a.it.score;
         });
@@ -95,7 +98,7 @@ export default function InputPage() {
             list: filtered.slice(0, limit).map((x) => x.it),
             matches: filtered.length,
         };
-    }, [items, clientFilter]);
+    }, [items, filterForList]);
 
     const cards = useMemo(() => {
         return derived.list.map((item) => <Card key={item.id} item={item} />);
@@ -106,6 +109,7 @@ export default function InputPage() {
             <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
                 <h2 style={{ margin: 0 }}>Input (Server + Client filters)</h2>
                 <div style={{ opacity: 0.75, fontSize: 14 }}>
+                    {isStale && " • updating…"}
                     {loading ? "Fetching…" : "Idle"} • total={derived.total} • matches={derived.matches} • shown={derived.shown}
                 </div>
             </div>
@@ -116,7 +120,7 @@ export default function InputPage() {
                     <input
                         value={serverQuery}
                         onChange={(e) => {
-                            // сюда удобно вставить startTransition/useTransition
+                            // Я бы лучше добавил хук транзишен, для плавной работы
                             setServerQuery(e.target.value);
                         }}
                         placeholder='e.g. "react", "alpha", "transition"'
@@ -134,9 +138,10 @@ export default function InputPage() {
                     <input
                         value={clientFilter}
                         onChange={(e) => {
-                            // этот инпут специально "живой", без дебаунса
-                            // сюда идеально ложится useDeferredValue(clientFilter)
                             setClientFilter(e.target.value);
+                            startTransition(() => {
+                                setFilterForList(e.target.value)
+                            })
                         }}
                         placeholder='type fast here to stress filtering'
                         style={{
